@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/dgraph-io/badger/v2"
 )
@@ -58,11 +59,31 @@ func Open(options Options) (*Store, error) {
 		return nil, err
 	}
 
+	go runStorageGC(db)
+
 	return &Store{
 		db:               db,
 		sequenceBandwith: options.SequenceBandwith,
 		sequences:        &sync.Map{},
 	}, nil
+}
+
+func runStorageGC(db *badger.DB) {
+	timer := time.NewTicker(10 * time.Minute)
+	for {
+		select {
+		case <-timer.C:
+			storageGC(db)
+		}
+	}
+}
+
+func storageGC(db *badger.DB) {
+again:
+	err := db.RunValueLogGC(0.5)
+	if err == nil {
+		goto again
+	}
 }
 
 // Badger returns the underlying Badger DB the hold is based on
