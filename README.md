@@ -1,6 +1,6 @@
 # kvdb
 kvdb interface for badger etc.
-
+based on https://github.com/timshannon/badgerhold
 
 ## Indexes
 Indexes allow you to skip checking any records that don't meet your index criteria.  If you have 1000 records and only
@@ -227,7 +227,7 @@ for i := range result {
 Aggregate queries become especially powerful when combined with the sub-querying capability of `MatchFunc`.
 
 
-Many more examples of queries can be found in the [find_test.go](https://github.com/timshannon/hold/blob/master/find_test.go)
+Many more examples of queries can be found in the [find_test.go](https://github.com/xurwxj/kvdb/hold/blob/master/find_test.go)
 file in this repository.
 
 ## Comparing
