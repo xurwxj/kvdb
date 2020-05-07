@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/dgraph-io/badger/v2"
+	"github.com/xurwxj/kvdb/db"
 )
 
 const (
@@ -25,6 +26,7 @@ const (
 
 // Store is a hold wrapper around a badger DB
 type Store struct {
+	Storage          *db.Badger
 	db               *badger.DB
 	sequenceBandwith uint64
 	sequences        *sync.Map
@@ -50,7 +52,7 @@ var DefaultOptions = Options{
 
 // Open opens or creates a hold file.
 func Open(options Options) (*Store, error) {
-
+	storage := &db.Badger{}
 	encode = options.Encoder
 	decode = options.Decoder
 
@@ -60,8 +62,10 @@ func Open(options Options) (*Store, error) {
 	}
 
 	go runStorageGC(db)
+	storage.DB = db
 
 	return &Store{
+		Storage:          storage,
 		db:               db,
 		sequenceBandwith: options.SequenceBandwith,
 		sequences:        &sync.Map{},

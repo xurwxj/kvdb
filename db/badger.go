@@ -9,7 +9,7 @@ import (
 
 // Badger implements wrapper for badger database
 type Badger struct {
-	db *badger.DB
+	DB *badger.DB
 }
 
 // NewBadger returns new instance of badger wrapper
@@ -20,7 +20,7 @@ func NewBadger(storageDir string) *Badger {
 	opts.Dir = storageDir
 	opts.ValueDir = storageDir
 	var err error
-	storage.db, err = badger.Open(opts)
+	storage.DB, err = badger.Open(opts)
 	if err != nil {
 		panic(err)
 	}
@@ -32,7 +32,7 @@ func NewBadger(storageDir string) *Badger {
 
 // ProcessBatch process batch of operations
 func (storage *Badger) ProcessBatch(batch []*interfaces.Operation) (err error) {
-	return storage.db.Update(func(txn *badger.Txn) error {
+	return storage.DB.Update(func(txn *badger.Txn) error {
 		for _, op := range batch {
 			if op.Op == interfaces.OpSet {
 				if err = txn.Set([]byte(op.Key), op.Value); err != nil {
@@ -51,12 +51,12 @@ func (storage *Badger) ProcessBatch(batch []*interfaces.Operation) (err error) {
 
 // Close properly closes badger database
 func (storage *Badger) Close() error {
-	return storage.db.Close()
+	return storage.DB.Close()
 }
 
 // Set adds a key-value pair to the database
 func (storage *Badger) Set(key string, value []byte) (err error) {
-	return storage.db.Update(func(txn *badger.Txn) error {
+	return storage.DB.Update(func(txn *badger.Txn) error {
 		err := txn.Set([]byte(key), value)
 		return err
 	})
@@ -64,7 +64,7 @@ func (storage *Badger) Set(key string, value []byte) (err error) {
 
 // Del deletes a key
 func (storage *Badger) Del(key string) (err error) {
-	return storage.db.Update(func(txn *badger.Txn) error {
+	return storage.DB.Update(func(txn *badger.Txn) error {
 		err := txn.Delete([]byte(key))
 		return err
 	})
@@ -72,7 +72,7 @@ func (storage *Badger) Del(key string) (err error) {
 
 // Get returns value by key
 func (storage *Badger) Get(key string) (value []byte, err error) {
-	err = storage.db.View(func(txn *badger.Txn) error {
+	err = storage.DB.View(func(txn *badger.Txn) error {
 		item, err := txn.Get([]byte(key))
 		if err != nil {
 			return err
@@ -88,7 +88,7 @@ func (storage *Badger) Get(key string) (value []byte, err error) {
 
 // Iterate iterates over all keys
 func (storage *Badger) Iterate(fn func(key []byte, value []byte)) {
-	storage.db.View(func(txn *badger.Txn) error {
+	storage.DB.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
 		opts.AllVersions = false
 		it := txn.NewIterator(opts)
@@ -109,7 +109,7 @@ func (storage *Badger) Iterate(fn func(key []byte, value []byte)) {
 // Iterate iterates over keys with prefix
 func (storage *Badger) IterateByPrefix(prefix []byte, limit uint64, fn func(key []byte, value []byte)) uint64 {
 	var totalIterated uint64
-	storage.db.View(func(txn *badger.Txn) error {
+	storage.DB.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
 		opts.AllVersions = false
 		it := txn.NewIterator(opts)
@@ -133,7 +133,7 @@ func (storage *Badger) IterateByPrefix(prefix []byte, limit uint64, fn func(key 
 
 func (storage *Badger) KeysByPrefixCount(prefix []byte) uint64 {
 	var count uint64
-	storage.db.View(func(txn *badger.Txn) error {
+	storage.DB.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
 		opts.AllVersions = false
 		opts.PrefetchValues = false
@@ -153,7 +153,7 @@ func (storage *Badger) KeysByPrefixCount(prefix []byte) uint64 {
 // Iterate iterates over keys with prefix
 func (storage *Badger) DeleteByPrefix(prefix []byte) {
 	deleteKeys := func(keysForDelete [][]byte) error {
-		if err := storage.db.Update(func(txn *badger.Txn) error {
+		if err := storage.DB.Update(func(txn *badger.Txn) error {
 			for _, key := range keysForDelete {
 				if err := txn.Delete(key); err != nil {
 					return err
@@ -172,7 +172,7 @@ func (storage *Badger) DeleteByPrefix(prefix []byte) {
 	keysCollected := 0
 
 	// создать банчи и удалять банчами после итератора же ну
-	storage.db.View(func(txn *badger.Txn) error {
+	storage.DB.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
 		opts.AllVersions = false
 		opts.PrefetchValues = false
@@ -204,7 +204,7 @@ func (storage *Badger) DeleteByPrefix(prefix []byte) {
 // Iterate iterates over keys with prefix
 func (storage *Badger) IterateByPrefixFrom(prefix []byte, from []byte, limit uint64, fn func(key []byte, value []byte)) uint64 {
 	var totalIterated uint64
-	storage.db.View(func(txn *badger.Txn) error {
+	storage.DB.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
 		opts.AllVersions = false
 		it := txn.NewIterator(opts)
@@ -238,7 +238,7 @@ func (storage *Badger) runStorageGC() {
 
 func (storage *Badger) storageGC() {
 again:
-	err := storage.db.RunValueLogGC(0.5)
+	err := storage.DB.RunValueLogGC(0.5)
 	if err == nil {
 		goto again
 	}
