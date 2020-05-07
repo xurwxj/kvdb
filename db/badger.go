@@ -7,6 +7,8 @@ import (
 	"github.com/xurwxj/kvdb/interfaces"
 )
 
+// base on https://github.com/valinurovam/garagemq/blob/master/storage/storage_badger.go
+
 // Badger implements wrapper for badger database
 type Badger struct {
 	DB *badger.DB
