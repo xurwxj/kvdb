@@ -21,6 +21,7 @@ func NewBadger(storageDir string) *Badger {
 	opts.SyncWrites = true
 	opts.Dir = storageDir
 	opts.ValueDir = storageDir
+	opts.WithDetectConflicts(false)
 	var err error
 	storage.DB, err = badger.Open(opts)
 	if err != nil {
