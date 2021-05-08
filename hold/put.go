@@ -4,7 +4,7 @@ import (
 	"errors"
 	"reflect"
 
-	"github.com/dgraph-io/badger/v2"
+	"github.com/dgraph-io/badger/v3"
 )
 
 // ErrKeyExists is the error returned when data is being Inserted for a Key that already exists
@@ -40,7 +40,7 @@ func (s *Store) Insert(key, data interface{}) error {
 
 // TxInsert is the same as Insert except it allows you specify your own transaction
 func (s *Store) TxInsert(tx *badger.Txn, key, data interface{}) error {
-	storer := newStorer(data)
+	storer := s.newStorer(data)
 	var err error
 
 	if _, ok := key.(sequence); ok {
@@ -50,7 +50,7 @@ func (s *Store) TxInsert(tx *badger.Txn, key, data interface{}) error {
 		}
 	}
 
-	gk, err := encodeKey(key, storer.Type())
+	gk, err := s.encodeKey(key, storer.Type())
 
 	if err != nil {
 		return err
@@ -61,7 +61,7 @@ func (s *Store) TxInsert(tx *badger.Txn, key, data interface{}) error {
 		return ErrKeyExists
 	}
 
-	value, err := encode(data)
+	value, err := s.encode(data)
 	if err != nil {
 		return err
 	}
@@ -74,7 +74,7 @@ func (s *Store) TxInsert(tx *badger.Txn, key, data interface{}) error {
 	}
 
 	// insert any indexes
-	err = indexAdd(storer, tx, gk, data)
+	err = s.indexAdd(storer, tx, gk, data)
 	if err != nil {
 		return err
 	}
@@ -83,26 +83,20 @@ func (s *Store) TxInsert(tx *badger.Txn, key, data interface{}) error {
 	if !dataVal.CanSet() {
 		return nil
 	}
-	dataType := dataVal.Type()
 
-	for i := 0; i < dataType.NumField(); i++ {
-		tf := dataType.Field(i)
-		if _, ok := tf.Tag.Lookup(HoldKeyTag); ok ||
-			tf.Tag.Get(holdPrefixTag) == holdPrefixKeyValue {
-			fieldValue := dataVal.Field(i)
-			keyValue := reflect.ValueOf(key)
-			if keyValue.Type() != tf.Type {
-				break
-			}
-			if !fieldValue.CanSet() {
-				break
-			}
-			if !reflect.DeepEqual(fieldValue.Interface(), reflect.Zero(tf.Type).Interface()) {
-				break
-			}
-			fieldValue.Set(keyValue)
-			break
+	if keyField, ok := getKeyField(dataVal.Type()); ok {
+		fieldValue := dataVal.FieldByName(keyField.Name)
+		keyValue := reflect.ValueOf(key)
+		if keyValue.Type() != keyField.Type {
+			return nil
 		}
+		if !fieldValue.CanSet() {
+			return nil
+		}
+		if !reflect.DeepEqual(fieldValue.Interface(), reflect.Zero(keyField.Type).Interface()) {
+			return nil
+		}
+		fieldValue.Set(keyValue)
 	}
 
 	return nil
@@ -118,9 +112,9 @@ func (s *Store) Update(key interface{}, data interface{}) error {
 
 // TxUpdate is the same as Update except it allows you to specify your own transaction
 func (s *Store) TxUpdate(tx *badger.Txn, key interface{}, data interface{}) error {
-	storer := newStorer(data)
+	storer := s.newStorer(data)
 
-	gk, err := encodeKey(key, storer.Type())
+	gk, err := s.encodeKey(key, storer.Type())
 
 	if err != nil {
 		return err
@@ -138,17 +132,17 @@ func (s *Store) TxUpdate(tx *badger.Txn, key interface{}, data interface{}) erro
 	existingVal := reflect.New(reflect.TypeOf(data)).Interface()
 
 	err = existingItem.Value(func(existing []byte) error {
-		return decode(existing, existingVal)
+		return s.decode(existing, existingVal)
 	})
 	if err != nil {
 		return err
 	}
-	err = indexDelete(storer, tx, gk, existingVal)
+	err = s.indexDelete(storer, tx, gk, existingVal)
 	if err != nil {
 		return err
 	}
 
-	value, err := encode(data)
+	value, err := s.encode(data)
 	if err != nil {
 		return err
 	}
@@ -160,7 +154,7 @@ func (s *Store) TxUpdate(tx *badger.Txn, key interface{}, data interface{}) erro
 	}
 
 	// insert any new indexes
-	return indexAdd(storer, tx, gk, data)
+	return s.indexAdd(storer, tx, gk, data)
 }
 
 // Upsert inserts the record into the hold if it doesn't exist.  If it does already exist, then it updates
@@ -173,9 +167,9 @@ func (s *Store) Upsert(key interface{}, data interface{}) error {
 
 // TxUpsert is the same as Upsert except it allows you to specify your own transaction
 func (s *Store) TxUpsert(tx *badger.Txn, key interface{}, data interface{}) error {
-	storer := newStorer(data)
+	storer := s.newStorer(data)
 
-	gk, err := encodeKey(key, storer.Type())
+	gk, err := s.encodeKey(key, storer.Type())
 
 	if err != nil {
 		return err
@@ -189,13 +183,13 @@ func (s *Store) TxUpsert(tx *badger.Txn, key interface{}, data interface{}) erro
 		existingVal := reflect.New(reflect.TypeOf(data)).Interface()
 
 		err = existingItem.Value(func(existing []byte) error {
-			return decode(existing, existingVal)
+			return s.decode(existing, existingVal)
 		})
 		if err != nil {
 			return err
 		}
 
-		err = indexDelete(storer, tx, gk, existingVal)
+		err = s.indexDelete(storer, tx, gk, existingVal)
 		if err != nil {
 			return err
 		}
@@ -205,7 +199,7 @@ func (s *Store) TxUpsert(tx *badger.Txn, key interface{}, data interface{}) erro
 
 	// existing entry not found
 
-	value, err := encode(data)
+	value, err := s.encode(data)
 	if err != nil {
 		return err
 	}
@@ -217,7 +211,7 @@ func (s *Store) TxUpsert(tx *badger.Txn, key interface{}, data interface{}) erro
 	}
 
 	// insert any new indexes
-	return indexAdd(storer, tx, gk, data)
+	return s.indexAdd(storer, tx, gk, data)
 }
 
 // UpdateMatching runs the update function for every record that match the passed in query
@@ -231,5 +225,5 @@ func (s *Store) UpdateMatching(dataType interface{}, query *Query, update func(r
 // TxUpdateMatching does the same as UpdateMatching, but allows you to specify your own transaction
 func (s *Store) TxUpdateMatching(tx *badger.Txn, dataType interface{}, query *Query,
 	update func(record interface{}) error) error {
-	return updateQuery(tx, dataType, query, update)
+	return s.updateQuery(tx, dataType, query, update)
 }

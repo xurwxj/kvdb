@@ -8,7 +8,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/dgraph-io/badger/v2"
+	"github.com/dgraph-io/badger/v3"
 )
 
 const (
@@ -204,7 +204,7 @@ func (q *Query) Or(query *Query) *Query {
 	return q
 }
 
-func (q *Query) matchesAllFields(key []byte, value reflect.Value, currentRow interface{}) (bool, error) {
+func (q *Query) matchesAllFields(s *Store, key []byte, value reflect.Value, currentRow interface{}) (bool, error) {
 	if q.IsEmpty() {
 		return true, nil
 	}
@@ -216,7 +216,7 @@ func (q *Query) matchesAllFields(key []byte, value reflect.Value, currentRow int
 		}
 
 		if field == Key {
-			ok, err := matchesAllCriteria(criteria, key, true, q.dataType.Name(), currentRow)
+			ok, err := s.matchesAllCriteria(criteria, key, true, q.dataType.Name(), currentRow)
 			if err != nil {
 				return false, err
 			}
@@ -232,7 +232,7 @@ func (q *Query) matchesAllFields(key []byte, value reflect.Value, currentRow int
 			return false, err
 		}
 
-		ok, err := matchesAllCriteria(criteria, fVal.Interface(), false, "", currentRow)
+		ok, err := s.matchesAllCriteria(criteria, fVal.Interface(), false, "", currentRow)
 		if err != nil {
 			return false, err
 		}
@@ -342,6 +342,7 @@ type RecordAccess struct {
 	record interface{}
 	field  interface{}
 	query  *Query
+	store  *Store
 }
 
 // Field is the current field being queried
@@ -359,7 +360,7 @@ func (r *RecordAccess) Record() interface{} {
 func (r *RecordAccess) SubQuery(result interface{}, query *Query) error {
 	query.subquery = true
 	query.bookmark = r.query.bookmark
-	return findQuery(r.query.tx, result, query)
+	return r.store.findQuery(r.query.tx, result, query)
 }
 
 // SubAggregateQuery allows you to run another aggregate query in the same transaction for each
@@ -367,7 +368,7 @@ func (r *RecordAccess) SubQuery(result interface{}, query *Query) error {
 func (r *RecordAccess) SubAggregateQuery(query *Query, groupBy ...string) ([]*AggregateResult, error) {
 	query.subquery = true
 	query.bookmark = r.query.bookmark
-	return aggregateQuery(r.query.tx, r.record, query, groupBy...)
+	return r.store.aggregateQuery(r.query.tx, r.record, query, groupBy...)
 }
 
 // MatchFunc will test if a field matches the passed in function
@@ -381,14 +382,14 @@ func (c *Criterion) MatchFunc(match MatchFunc) *Query {
 }
 
 // test if the criterion passes with the passed in value
-func (c *Criterion) test(testValue interface{}, encoded bool, keyType string, currentRow interface{}) (bool, error) {
+func (c *Criterion) test(s *Store, testValue interface{}, encoded bool, keyType string, currentRow interface{}) (bool, error) {
 	var value interface{}
 	if encoded {
 		if len(testValue.([]byte)) != 0 {
 			if c.operator == in {
 				// value is a slice of values, use c.inValues
 				value = reflect.New(reflect.TypeOf(c.inValues[0])).Interface()
-				err := decode(testValue.([]byte), value)
+				err := s.decode(testValue.([]byte), value)
 				if err != nil {
 					return false, err
 				}
@@ -397,12 +398,12 @@ func (c *Criterion) test(testValue interface{}, encoded bool, keyType string, cu
 				// used with keys
 				value = reflect.New(reflect.TypeOf(c.value)).Interface()
 				if keyType != "" {
-					err := decodeKey(testValue.([]byte), value, keyType)
+					err := s.decodeKey(testValue.([]byte), value, keyType)
 					if err != nil {
 						return false, err
 					}
 				} else {
-					err := decode(testValue.([]byte), value)
+					err := s.decode(testValue.([]byte), value)
 					if err != nil {
 						return false, err
 					}
@@ -433,6 +434,7 @@ func (c *Criterion) test(testValue interface{}, encoded bool, keyType string, cu
 			field:  value,
 			record: currentRow,
 			query:  c.query,
+			store:  s,
 		})
 	case isnil:
 		return reflect.ValueOf(value).IsNil(), nil
@@ -466,11 +468,11 @@ func (c *Criterion) test(testValue interface{}, encoded bool, keyType string, cu
 	}
 }
 
-func matchesAllCriteria(criteria []*Criterion, value interface{}, encoded bool, keyType string,
+func (s *Store) matchesAllCriteria(criteria []*Criterion, value interface{}, encoded bool, keyType string,
 	currentRow interface{}) (bool, error) {
 
 	for i := range criteria {
-		ok, err := criteria[i].test(value, encoded, keyType, currentRow)
+		ok, err := criteria[i].test(s, value, encoded, keyType, currentRow)
 		if err != nil {
 			return false, err
 		}
@@ -557,9 +559,9 @@ type record struct {
 	value reflect.Value
 }
 
-func runQuery(tx *badger.Txn, dataType interface{}, query *Query, retrievedKeys keyList, skip int,
+func (s *Store) runQuery(tx *badger.Txn, dataType interface{}, query *Query, retrievedKeys keyList, skip int,
 	action func(r *record) error) error {
-	storer := newStorer(dataType)
+	storer := s.newStorer(dataType)
 
 	tp := dataType
 
@@ -570,10 +572,10 @@ func runQuery(tx *badger.Txn, dataType interface{}, query *Query, retrievedKeys 
 	query.dataType = reflect.TypeOf(tp)
 
 	if len(query.sort) > 0 {
-		return runQuerySort(tx, dataType, query, action)
+		return s.runQuerySort(tx, dataType, query, action)
 	}
 
-	iter := newIterator(tx, storer.Type(), query, query.bookmark)
+	iter := s.newIterator(tx, storer.Type(), query, query.bookmark)
 	if (query.writable || query.subquery) && query.bookmark == nil {
 		query.bookmark = iter.createBookmark()
 	}
@@ -601,14 +603,14 @@ func runQuery(tx *badger.Txn, dataType interface{}, query *Query, retrievedKeys 
 
 		val := reflect.New(reflect.TypeOf(tp))
 
-		err := decode(v, val.Interface())
+		err := s.decode(v, val.Interface())
 		if err != nil {
 			return err
 		}
 
 		query.tx = tx
 
-		ok, err := query.matchesAllFields(k, val, val.Interface())
+		ok, err := query.matchesAllFields(s, k, val, val.Interface())
 		if err != nil {
 			return err
 		}
@@ -655,7 +657,7 @@ func runQuery(tx *badger.Txn, dataType interface{}, query *Query, retrievedKeys 
 		}
 
 		for i := range query.ors {
-			err := runQuery(tx, tp, query.ors[i], retrievedKeys, skip, action)
+			err := s.runQuery(tx, tp, query.ors[i], retrievedKeys, skip, action)
 			if err != nil {
 				return err
 			}
@@ -666,7 +668,7 @@ func runQuery(tx *badger.Txn, dataType interface{}, query *Query, retrievedKeys 
 }
 
 // runQuerySort runs the query without sort, skip, or limit, then applies them to the entire result set
-func runQuerySort(tx *badger.Txn, dataType interface{}, query *Query, action func(r *record) error) error {
+func (s *Store) runQuerySort(tx *badger.Txn, dataType interface{}, query *Query, action func(r *record) error) error {
 	// Validate sort fields
 	for _, field := range query.sort {
 		fields := strings.Split(field, ".")
@@ -696,7 +698,7 @@ func runQuerySort(tx *badger.Txn, dataType interface{}, query *Query, action fun
 	qCopy.skip = 0
 
 	var records []*record
-	err := runQuery(tx, dataType, &qCopy, nil, 0,
+	err := s.runQuery(tx, dataType, &qCopy, nil, 0,
 		func(r *record) error {
 			records = append(records, r)
 
@@ -774,7 +776,7 @@ func runQuerySort(tx *badger.Txn, dataType interface{}, query *Query, action fun
 
 }
 
-func findQuery(tx *badger.Txn, result interface{}, query *Query) error {
+func (s *Store) findQuery(tx *badger.Txn, result interface{}, query *Query) error {
 	if query == nil {
 		query = &Query{}
 	}
@@ -796,21 +798,11 @@ func findQuery(tx *badger.Txn, result interface{}, query *Query) error {
 		tp = tp.Elem()
 	}
 
-	var keyType reflect.Type
-	var keyField string
-
-	for i := 0; i < tp.NumField(); i++ {
-		if strings.Contains(string(tp.Field(i).Tag), HoldKeyTag) ||
-			tp.Field(i).Tag.Get(holdPrefixTag) == holdPrefixKeyValue {
-			keyType = tp.Field(i).Type
-			keyField = tp.Field(i).Name
-			break
-		}
-	}
+	keyField, hasKeyField := getKeyField(tp)
 
 	val := reflect.New(tp)
 
-	err := runQuery(tx, val.Interface(), query, nil, query.skip,
+	err := s.runQuery(tx, val.Interface(), query, nil, query.skip,
 		func(r *record) error {
 			var rowValue reflect.Value
 
@@ -820,12 +812,12 @@ func findQuery(tx *badger.Txn, result interface{}, query *Query) error {
 				rowValue = r.value.Elem()
 			}
 
-			if keyType != nil {
+			if hasKeyField {
 				rowKey := rowValue
 				for rowKey.Kind() == reflect.Ptr {
 					rowKey = rowKey.Elem()
 				}
-				err := decodeKey(r.key, rowKey.FieldByName(keyField).Addr().Interface(), tp.Name())
+				err := s.decodeKey(r.key, rowKey.FieldByName(keyField.Name).Addr().Interface(), tp.Name())
 				if err != nil {
 					return err
 				}
@@ -845,7 +837,7 @@ func findQuery(tx *badger.Txn, result interface{}, query *Query) error {
 	return nil
 }
 
-func deleteQuery(tx *badger.Txn, dataType interface{}, query *Query) error {
+func (s *Store) deleteQuery(tx *badger.Txn, dataType interface{}, query *Query) error {
 	if query == nil {
 		query = &Query{}
 	}
@@ -853,7 +845,7 @@ func deleteQuery(tx *badger.Txn, dataType interface{}, query *Query) error {
 
 	var records []*record
 
-	err := runQuery(tx, dataType, query, nil, query.skip,
+	err := s.runQuery(tx, dataType, query, nil, query.skip,
 		func(r *record) error {
 			records = append(records, r)
 
@@ -864,7 +856,7 @@ func deleteQuery(tx *badger.Txn, dataType interface{}, query *Query) error {
 		return err
 	}
 
-	storer := newStorer(dataType)
+	storer := s.newStorer(dataType)
 
 	for i := range records {
 		err := tx.Delete(records[i].key)
@@ -873,7 +865,7 @@ func deleteQuery(tx *badger.Txn, dataType interface{}, query *Query) error {
 		}
 
 		// remove any indexes
-		err = indexDelete(storer, tx, records[i].key, records[i].value.Interface())
+		err = s.indexDelete(storer, tx, records[i].key, records[i].value.Interface())
 		if err != nil {
 			return err
 		}
@@ -882,7 +874,7 @@ func deleteQuery(tx *badger.Txn, dataType interface{}, query *Query) error {
 	return nil
 }
 
-func updateQuery(tx *badger.Txn, dataType interface{}, query *Query, update func(record interface{}) error) error {
+func (s *Store) updateQuery(tx *badger.Txn, dataType interface{}, query *Query, update func(record interface{}) error) error {
 	if query == nil {
 		query = &Query{}
 	}
@@ -890,7 +882,7 @@ func updateQuery(tx *badger.Txn, dataType interface{}, query *Query, update func
 	query.writable = true
 	var records []*record
 
-	err := runQuery(tx, dataType, query, nil, query.skip,
+	err := s.runQuery(tx, dataType, query, nil, query.skip,
 		func(r *record) error {
 			records = append(records, r)
 
@@ -902,12 +894,12 @@ func updateQuery(tx *badger.Txn, dataType interface{}, query *Query, update func
 		return err
 	}
 
-	storer := newStorer(dataType)
+	storer := s.newStorer(dataType)
 	for i := range records {
 		upVal := records[i].value.Interface()
 
 		// delete any existing indexes bad on original value
-		err := indexDelete(storer, tx, records[i].key, upVal)
+		err := s.indexDelete(storer, tx, records[i].key, upVal)
 		if err != nil {
 			return err
 		}
@@ -917,7 +909,7 @@ func updateQuery(tx *badger.Txn, dataType interface{}, query *Query, update func
 			return err
 		}
 
-		encVal, err := encode(upVal)
+		encVal, err := s.encode(upVal)
 		if err != nil {
 			return err
 		}
@@ -928,7 +920,7 @@ func updateQuery(tx *badger.Txn, dataType interface{}, query *Query, update func
 		}
 
 		// insert any new indexes
-		err = indexAdd(storer, tx, records[i].key, upVal)
+		err = s.indexAdd(storer, tx, records[i].key, upVal)
 		if err != nil {
 			return err
 		}
@@ -937,7 +929,7 @@ func updateQuery(tx *badger.Txn, dataType interface{}, query *Query, update func
 	return nil
 }
 
-func aggregateQuery(tx *badger.Txn, dataType interface{}, query *Query, groupBy ...string) ([]*AggregateResult, error) {
+func (s *Store) aggregateQuery(tx *badger.Txn, dataType interface{}, query *Query, groupBy ...string) ([]*AggregateResult, error) {
 	if query == nil {
 		query = &Query{}
 	}
@@ -949,7 +941,7 @@ func aggregateQuery(tx *badger.Txn, dataType interface{}, query *Query, groupBy 
 		result = append(result, &AggregateResult{})
 	}
 
-	err := runQuery(tx, dataType, query, nil, query.skip,
+	err := s.runQuery(tx, dataType, query, nil, query.skip,
 		func(r *record) error {
 			if len(groupBy) == 0 {
 				result[0].reduction = append(result[0].reduction, r.value)
@@ -1015,4 +1007,119 @@ func aggregateQuery(tx *badger.Txn, dataType interface{}, query *Query, groupBy 
 	}
 
 	return result, nil
+}
+
+func (s *Store) findOneQuery(tx *badger.Txn, result interface{}, query *Query) error {
+	if query == nil {
+		query = &Query{}
+	}
+	originalLimit := query.limit
+
+	query.limit = 1
+
+	query.writable = false
+
+	resultVal := reflect.ValueOf(result)
+	if resultVal.Kind() != reflect.Ptr {
+		panic("result argument must be an address")
+	}
+
+	elType := resultVal.Elem().Type()
+	tp := elType
+
+	for tp.Kind() == reflect.Ptr {
+		tp = tp.Elem()
+	}
+
+	keyField, hasKeyField := getKeyField(tp)
+
+	val := reflect.New(tp)
+
+	found := false
+
+	err := s.runQuery(tx, val.Interface(), query, nil, query.skip,
+		func(r *record) error {
+			found = true
+			var rowValue reflect.Value
+
+			if elType.Kind() == reflect.Ptr {
+				rowValue = r.value
+			} else {
+				rowValue = r.value.Elem()
+			}
+
+			if hasKeyField {
+				rowKey := rowValue
+				for rowKey.Kind() == reflect.Ptr {
+					rowKey = rowKey.Elem()
+				}
+				err := s.decodeKey(r.key, rowKey.FieldByName(keyField.Name).Addr().Interface(), tp.Name())
+				if err != nil {
+					return err
+				}
+			}
+
+			resultVal.Elem().Set(r.value.Elem())
+
+			return nil
+		})
+
+	query.limit = originalLimit
+	if err != nil {
+		return err
+	}
+
+	if !found {
+		return ErrNotFound
+	}
+
+	return nil
+}
+
+func (s *Store) forEach(tx *badger.Txn, query *Query, fn interface{}) error {
+	if query == nil {
+		query = &Query{}
+	}
+
+	fnVal := reflect.ValueOf(fn)
+	argType := reflect.TypeOf(fn).In(0)
+
+	if argType.Kind() == reflect.Ptr {
+		argType = argType.Elem()
+	}
+
+	dataType := reflect.New(argType).Interface()
+
+	return s.runQuery(tx, dataType, query, nil, query.skip, func(r *record) error {
+		out := fnVal.Call([]reflect.Value{r.value})
+		if len(out) != 1 {
+			return fmt.Errorf("foreach function does not return an error")
+		}
+
+		if out[0].IsNil() {
+			return nil
+		}
+
+		return out[0].Interface().(error)
+	})
+}
+
+func (s *Store) countQuery(tx *badger.Txn, dataType interface{}, query *Query) (int, error) {
+	if query == nil {
+		query = &Query{}
+	}
+
+	count := 0
+
+	err := s.runQuery(tx, dataType, query, nil, query.skip,
+		func(r *record) error {
+			count++
+			return nil
+		})
+
+	if err != nil {
+		return 0, err
+	}
+
+	return count, nil
 }

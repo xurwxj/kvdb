@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"sort"
 
-	"github.com/dgraph-io/badger/v2"
+	"github.com/dgraph-io/badger/v3"
 )
 
 // AggregateResult allows you to access the results of an aggregate query
@@ -177,7 +177,7 @@ func (s *Store) FindAggregate(dataType interface{}, query *Query, groupBy ...str
 // groupBy is optional
 func (s *Store) TxFindAggregate(tx *badger.Txn, dataType interface{}, query *Query,
 	groupBy ...string) ([]*AggregateResult, error) {
-	return aggregateQuery(tx, dataType, query, groupBy...)
+	return s.aggregateQuery(tx, dataType, query, groupBy...)
 }
 
 func tryFloat(val reflect.Value) float64 {

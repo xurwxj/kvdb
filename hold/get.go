@@ -3,9 +3,8 @@ package hold
 import (
 	"errors"
 	"reflect"
-	"strings"
 
-	"github.com/dgraph-io/badger/v2"
+	"github.com/dgraph-io/badger/v3"
 )
 
 // ErrNotFound is returned when no data is found for the given key
@@ -21,9 +20,9 @@ func (s *Store) Get(key, result interface{}) error {
 // TxGet allows you to pass in your own badger transaction to retrieve a value from the hold and puts it
 // into result
 func (s *Store) TxGet(tx *badger.Txn, key, result interface{}) error {
-	storer := newStorer(result)
+	storer := s.newStorer(result)
 
-	gk, err := encodeKey(key, storer.Type())
+	gk, err := s.encodeKey(key, storer.Type())
 
 	if err != nil {
 		return err
@@ -35,7 +34,7 @@ func (s *Store) TxGet(tx *badger.Txn, key, result interface{}) error {
 	}
 
 	err = item.Value(func(value []byte) error {
-		return decode(value, result)
+		return s.decode(value, result)
 	})
 
 	if err != nil {
@@ -47,17 +46,10 @@ func (s *Store) TxGet(tx *badger.Txn, key, result interface{}) error {
 		tp = tp.Elem()
 	}
 
-	var keyField string
+	keyField, ok := getKeyField(tp)
 
-	for i := 0; i < tp.NumField(); i++ {
-		if strings.Contains(string(tp.Field(i).Tag), HoldKeyTag) {
-			keyField = tp.Field(i).Name
-			break
-		}
-	}
-
-	if keyField != "" {
-		err := decodeKey(gk, reflect.ValueOf(result).Elem().FieldByName(keyField).Addr().Interface(), storer.Type())
+	if ok {
+		err := s.decodeKey(gk, reflect.ValueOf(result).Elem().FieldByName(keyField.Name).Addr().Interface(), storer.Type())
 		if err != nil {
 			return err
 		}
@@ -78,5 +70,49 @@ func (s *Store) Find(result interface{}, query *Query) error {
 
 // TxFind allows you to pass in your own badger transaction to retrieve a set of values from the hold
 func (s *Store) TxFind(tx *badger.Txn, result interface{}, query *Query) error {
-	return findQuery(tx, result, query)
+	return s.findQuery(tx, result, query)
+}
+
+// FindOne returns a single record, and so result is NOT a slice, but an pointer to a struct, if no record is found
+// that matches the query, then it returns ErrNotFound
+func (s *Store) FindOne(result interface{}, query *Query) error {
+	return s.Badger().View(func(tx *badger.Txn) error {
+		return s.TxFindOne(tx, result, query)
+	})
+}
+
+// TxFindOne allows you to pass in your own badger transaction to retrieve a single record from the badgerhold
+func (s *Store) TxFindOne(tx *badger.Txn, result interface{}, query *Query) error {
+	return s.findOneQuery(tx, result, query)
+}
+
+// Count returns the current record count for the passed in datatype
+func (s *Store) Count(dataType interface{}, query *Query) (int, error) {
+	count := 0
+	err := s.Badger().View(func(tx *badger.Txn) error {
+		var txErr error
+		count, txErr = s.TxCount(tx, dataType, query)
+		return txErr
+	})
+	return count, err
+}
+
+// TxCount returns the current record count from within the given transaction for the passed in datatype
+func (s *Store) TxCount(tx *badger.Txn, dataType interface{}, query *Query) (int, error) {
+	return s.countQuery(tx, dataType, query)
+}
+
+// ForEach runs the function fn against every record that matches the query
+// Useful for when working with large sets of data that you don't want to hold the entire result
+// set in memory, similar to database cursors
+// Return an error from fn, will stop the cursor from iterating
+func (s *Store) ForEach(query *Query, fn interface{}) error {
+	return s.Badger().View(func(tx *badger.Txn) error {
+		return s.TxForEach(tx, query, fn)
+	})
+}
+
+// TxForEach is the same as ForEach but you get to specify your transaction
+func (s *Store) TxForEach(tx *badger.Txn, query *Query, fn interface{}) error {
+	return s.forEach(tx, query, fn)
 }

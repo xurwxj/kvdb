@@ -1058,3 +1058,57 @@ func TestNestedStructPointer(t *testing.T) {
 		}
 	})
 }
+
+func TestFindOne(t *testing.T) {
+	testWrap(t, func(store *hold.Store, t *testing.T) {
+		insertTestData(t, store)
+		for _, tst := range testResults {
+			t.Run(tst.name, func(t *testing.T) {
+				result := &ItemTest{}
+				err := store.FindOne(result, tst.query)
+				if len(tst.result) == 0 && err == hold.ErrNotFound {
+					return
+				}
+
+				if err != nil {
+					t.Fatalf("Error finding one data from hold: %s", err)
+				}
+
+				if !result.equal(&testData[tst.result[0]]) {
+					t.Fatalf("Result doesnt match the first record in the testing result set. "+
+						"Expected key of %d got %d", &testData[tst.result[0]].Key, result.Key)
+				}
+			})
+		}
+	})
+}
+
+func TestFindOneWithNonPtr(t *testing.T) {
+	testWrap(t, func(store *hold.Store, t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatalf("Running FindOne with non pointer did not panic!")
+			}
+		}()
+		result := ItemTest{}
+		_ = store.FindOne(result, hold.Where("Name").Eq("blah"))
+	})
+}
+
+func TestCount(t *testing.T) {
+	testWrap(t, func(store *hold.Store, t *testing.T) {
+		insertTestData(t, store)
+		for _, tst := range testResults {
+			t.Run(tst.name, func(t *testing.T) {
+				count, err := store.Count(ItemTest{}, tst.query)
+				if err != nil {
+					t.Fatalf("Error counting data from hold: %s", err)
+				}
+
+				if count != len(tst.result) {
+					t.Fatalf("Count result is %d wanted %d.", count, len(tst.result))
+				}
+			})
+		}
+	})
+}
